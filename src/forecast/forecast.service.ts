@@ -84,9 +84,10 @@ export class ForecastService {
             }
         })
 
-        fs.writeFileSync(`data/output/predictions-${new Date().valueOf()}.json`, JSON.stringify(result, null, 2), "utf-8");
+        const fileName = `data/output/predictions-${new Date().valueOf()}.json`;
 
-        console.log("Forecast saved to predictions.json");
+        fs.writeFileSync(fileName, JSON.stringify(result, null, 2), "utf-8");
+        console.log(`Predictions saved to ${fileName}`);
     };
 
     private async loadData(): Promise<number[]> {
