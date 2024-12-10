@@ -6,12 +6,14 @@ import * as fs from "fs";
 import { loadData } from 'src/common/util/json-parser';
 import { EnergyData } from 'src/common/energy-data.interface';
 
+const INPUT_YEARS = [2022, 2023];
+
 @Injectable()
 export class ForecastService {
 
     async forecast() {
         // Step 1: Load and preprocess the data
-        const rawData = await loadData();
+        const rawData = await this.loadData();
 
         // Normalize the data
         const min = Math.min(...rawData);
@@ -68,10 +70,26 @@ export class ForecastService {
             value_kw: value,
         }))
 
-        fs.writeFileSync("predictions.json", JSON.stringify(result, null, 2), "utf-8");
+        fs.writeFileSync(`data/output/predictions-${new Date().valueOf()}.json`, JSON.stringify(result, null, 2), "utf-8");
 
         console.log("Forecast saved to predictions.json");
     };
+
+    private async loadData(): Promise<number[]> {
+        const fileNames = INPUT_YEARS.map(this.buildFilename);
+        const result = []
+
+        for (const fileName of fileNames) {
+            const data = await loadData(fileName);
+            result.push(...data);
+        }
+
+        return result;
+    }
+
+    private buildFilename(year: number): string {
+        return `data/input/energy-data-${year}.json`;
+    }
 
     private forecastNextYear(
         model: tf.Sequential,
@@ -83,18 +101,18 @@ export class ForecastService {
         const predictions: number[] = [];
 
         for (let i = 0; i < steps; i++) {
-            // Convert the current input to a 3D tensor of shape [1, lookBack, 1]
-            const inputTensor = tf.tensor([currentInput], [1, lookBack, 1]);  // 3D tensor for LSTM
+            // Convert the current input to a 3D tensor of shape [1, lookBack]
+            const inputTensor = tf.tensor2d(currentInput, [1, lookBack]);  // Reshape the input to 2D
 
-            // Make the prediction
+            // Get the prediction for the next time step
             const prediction = model.predict(inputTensor) as tf.Tensor;
-
-            // Get the predicted value and push it to the predictions array
             const predictedValue = prediction.dataSync()[0];
+
+            // Store the prediction and update the input with the predicted value
             predictions.push(predictedValue);
 
             // Update input by sliding the window
-            currentInput = [...currentInput.slice(1), predictedValue];
+            currentInput = currentInput.slice(1).concat(predictedValue);
         }
 
         return predictions;
