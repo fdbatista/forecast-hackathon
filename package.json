@@ -28,6 +28,7 @@
     "@tensorflow/tfjs": "^4.22.0",
     "axios": "^1.7.9",
     "csv-parser": "^3.0.0",
+    "dayjs": "^1.11.13",
     "dotenv": "^16.4.7",
     "fs": "0.0.1-security",
     "openai": "^4.76.0",
