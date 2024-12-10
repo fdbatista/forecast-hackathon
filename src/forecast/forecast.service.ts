@@ -29,12 +29,20 @@ export class ForecastService {
         // Step 2: Define the model
         const model = tf.sequential();
 
-        model.add(tf.layers.reshape({ targetShape: [lookBack, 1], inputShape: [lookBack] }));
-        model.add(tf.layers.lstm({ units: 32, activation: 'tanh', returnSequences: false }));
+        // Input layer and first hidden layer
+        model.add(tf.layers.dense({ units: 32, inputShape: [lookBack], activation: 'relu' }));
+
+        // Second hidden layer
         model.add(tf.layers.dense({ units: 16, activation: 'relu' }));
+
+        // Output layer (single neuron for regression)
         model.add(tf.layers.dense({ units: 1 }));
 
-        model.compile({ optimizer: tf.train.adam(0.001), loss: "meanSquaredError" });
+        // Compile the model with Adam optimizer and MSE loss
+        model.compile({
+            optimizer: tf.train.adam(0.001),
+            loss: 'meanSquaredError',
+        });
 
         // Step 3: Train the model
         console.log("Training the model...");
