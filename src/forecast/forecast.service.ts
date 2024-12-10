@@ -1,18 +1,20 @@
 import { Injectable } from '@nestjs/common';
 import { createDataset, denormalize, normalize } from 'src/common/util/dataset-creator.util';
 import { loadData } from 'src/common/util/json-parser';
-import { EnergyData } from 'src/common/energy-data.interface';
 
 import * as tf from "@tensorflow/tfjs";
 import * as fs from "fs";
 import * as _ from "lodash";
+import * as dayjs from 'dayjs';
 
 const INPUT_YEARS = [2022, 2023];
+const COMPARISON_YEAR = 2024;
 
 @Injectable()
 export class ForecastService {
 
     async forecast() {
+
         // Step 1: Load and preprocess the data
         const rawData = await this.loadData();
 
@@ -66,10 +68,21 @@ export class ForecastService {
         // Step 5: Denormalize and save the predictions
         const denormalizedPredictions = denormalize(predictions, min, max);
 
-        const result: EnergyData[] = denormalizedPredictions.map((value, index) => ({
-            timestamp: new Date(Date.now() + index * 15 * 60 * 1000).toISOString(),
-            value_kw: value,
-        }))
+        const realData = await this.loadFileForYear(COMPARISON_YEAR);
+
+        const startDate = dayjs().startOf('year');
+
+        const result = denormalizedPredictions.map((value, index) => {
+            const realValue = _.get(realData, index, 0);
+
+            return {
+                timestamp: startDate.add(index * 15, 'minute').format('YYYY-MM-DD HH:mm:ss'),
+                predictedValue: value,
+                realValue,
+                deviation: Math.abs(value - realValue),
+                errorPercentage: (Math.abs(value - realValue) / realValue) * 100
+            }
+        })
 
         fs.writeFileSync(`data/output/predictions-${new Date().valueOf()}.json`, JSON.stringify(result, null, 2), "utf-8");
 
@@ -77,10 +90,9 @@ export class ForecastService {
     };
 
     private async loadData(): Promise<number[]> {
-        const fileNames = INPUT_YEARS.map(this.buildFilename);
-        const promises = fileNames.map(loadData);
+        const promises = INPUT_YEARS.map(this.loadFileForYear);
         const data = await Promise.all(promises);
-        
+
         const [firstYearData, ...remainingYearsData] = data;
 
         const result = []
@@ -97,8 +109,9 @@ export class ForecastService {
         return result;
     }
 
-    private buildFilename(year: number): string {
-        return `data/input/energy-data-${year}.json`;
+    private async loadFileForYear(year: number): Promise<number[]> {
+        const fileName = `data/input/energy-data-${year}.json`;
+        return await loadData(fileName);
     }
 
     private forecastNextYear(
