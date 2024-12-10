@@ -1,10 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { createDataset, denormalize, normalize } from 'src/common/util/dataset-creator.util';
+import { loadData } from 'src/common/util/json-parser';
+import { EnergyData } from 'src/common/energy-data.interface';
 
 import * as tf from "@tensorflow/tfjs";
 import * as fs from "fs";
-import { loadData } from 'src/common/util/json-parser';
-import { EnergyData } from 'src/common/energy-data.interface';
+import * as _ from "lodash";
 
 const INPUT_YEARS = [2022, 2023];
 
@@ -77,11 +78,20 @@ export class ForecastService {
 
     private async loadData(): Promise<number[]> {
         const fileNames = INPUT_YEARS.map(this.buildFilename);
+        const promises = fileNames.map(loadData);
+        const data = await Promise.all(promises);
+        
+        const [firstYearData, ...remainingYearsData] = data;
+
         const result = []
 
-        for (const fileName of fileNames) {
-            const data = await loadData(fileName);
-            result.push(...data);
+        for (let i = 0; i < firstYearData.length; i++) {
+            const firstYearEntry = firstYearData[i];
+            const remainingEntries = remainingYearsData.map((yearData) => _.get(yearData, i, null)).filter((entry) => entry !== null);
+
+            const avg = (firstYearEntry + remainingEntries.reduce((acc, entry) => acc + entry, 0)) / (remainingEntries.length + 1);
+
+            result.push(avg);
         }
 
         return result;
