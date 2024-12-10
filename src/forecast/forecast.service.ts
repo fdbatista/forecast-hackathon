@@ -74,14 +74,14 @@ export class ForecastService {
         const startDate = dayjs().startOf('year');
 
         const result = denormalizedPredictions.map((predictedValue, index) => {
-            const realValue = _.get(realData, index, 0);
+            const actualValue = _.get(realData, index, 0);
 
             return {
                 timestamp: startDate.add(index * 15, 'minute').format('YYYY-MM-DD HH:mm:ss'),
                 predictedValue,
-                realValue,
-                deviation: Math.abs(predictedValue - realValue.value),
-                errorPercentage: (Math.abs(predictedValue - realValue.value) / realValue.value) * 100
+                realValue: actualValue.value,
+                deviation: Math.abs(predictedValue - actualValue.value),
+                errorPercentage: (Math.abs(predictedValue - actualValue.value) / actualValue.value) * 100
             }
         })
 
@@ -89,7 +89,10 @@ export class ForecastService {
 
         fs.writeFileSync(fileName, JSON.stringify(result, null, 2), "utf-8");
 
-        const totalDeviationAvg = result.reduce((acc, entry) => acc + entry.deviation, 0) / result.length;
+        const totalDeviationAvg = result
+            .filter((entry) => Number.isFinite(entry.deviation))
+            .reduce((acc, entry) => acc + entry.deviation, 0) / result.length;
+
         console.log(`Predictions saved to ${fileName}. Average deviation: ${totalDeviationAvg}`);
 
         return result;
@@ -98,14 +101,14 @@ export class ForecastService {
     private async loadData(): Promise<number[]> {
         const promises = INPUT_YEARS.map(this.loadFileForYear);
         const data = await Promise.all(promises);
-        
+
         const [firstYear, secondYear] = data;
 
         const averages = []
 
         for (let i = 0; i < firstYear.length; i++) {
             const firstYearEntry = firstYear[i];
-            
+
             const firstYearTimestamp = firstYearEntry.timestamp;
             const secondYearTimestamp = dayjs(firstYearTimestamp).add(1, 'year').format('YYYY-MM-DD HH:mm')
 
