@@ -8,9 +8,14 @@ export const createDataset = (data: number[], lookBack: number): { X: number[][]
     const X: number[][] = [];
     const y: number[] = [];
 
-    for (let i = 0; i < data.length - lookBack; i++) {
-        X.push(data.slice(i, i + lookBack));
-        y.push(data[i + lookBack]);
+    for (let i = lookBack; i < data.length; i++) {
+        // Input is the previous 'lookBack' values (past days)
+        const input = data.slice(i - lookBack, i);
+        // Output is the next value (the one we're trying to predict)
+        const output = data[i];
+
+        X.push(input);
+        y.push(output);
     }
 
     return { X, y };

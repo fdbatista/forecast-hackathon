@@ -1,161 +1,160 @@
 import { Injectable } from '@nestjs/common';
-import { createDataset, denormalize, normalize } from 'src/common/util/dataset-creator.util';
 import { loadData } from 'src/common/util/json-parser';
-
-import * as tf from "@tensorflow/tfjs";
-import * as fs from "fs";
-import * as _ from "lodash";
-import * as dayjs from 'dayjs';
 import { ConsumptionData } from 'src/common/energy-data.interface';
 
-const INPUT_YEARS = [2022, 2023];
-const COMPARISON_YEAR = 2024;
+import * as tf from '@tensorflow/tfjs';
+import * as fs from 'fs';
+import * as _ from "lodash";
 
 @Injectable()
 export class ForecastService {
+    // Normalize data
+    private normalizeData(
+        data: ConsumptionData[]
+    ): { normalized: number[]; min: number; max: number } {
+        const values = data.map(d => d.value);
+        const min = Math.min(...values);
+        const max = Math.max(...values);
 
-    async forecast() {
+        const normalized = values.map(value => (value - min) / (max - min));
+        return { normalized, min, max };
+    }
 
-        // Step 1: Load and preprocess the data
-        const rawData = await this.loadData();
+    // Prepare training data (X, y)
+    private prepareData(
+        normalizedData: number[],
+        lookBack: number
+    ): { X: number[][]; y: number[] } {
+        const X = [];
+        const y = [];
 
-        // Normalize the data
-        const min = Math.min(...rawData);
-        const max = Math.max(...rawData);
-        const normalizedData = normalize(rawData, min, max);
+        for (let i = 0; i < normalizedData.length - lookBack; i++) {
+            X.push(normalizedData.slice(i, i + lookBack));
+            y.push(normalizedData[i + lookBack]);
+        }
 
-        // Prepare training data
-        const lookBack = 96; // 96 intervals = 24 hours
-        const { X, y } = createDataset(normalizedData, lookBack);
+        return { X, y };
+    }
 
-        // Convert to TensorFlow tensors
+    // Build the model
+    private createModel(lookBack: number): tf.Sequential {
+        const model = tf.sequential();
+
+        model.add(tf.layers.dense({ units: 64, activation: 'relu', inputShape: [lookBack] }));
+        model.add(tf.layers.dense({ units: 32, activation: 'relu' }));
+        model.add(tf.layers.dense({ units: 1 })); // Output layer
+        model.compile({ optimizer: 'adam', loss: 'meanSquaredError' });
+
+        return model;
+    }
+
+    // Train the model
+    private async trainModel(
+        model: tf.Sequential,
+        X: number[][],
+        y: number[],
+        epochs: number,
+        batchSize: number
+    ): Promise<tf.History> {
         const XTensor = tf.tensor2d(X);
         const yTensor = tf.tensor1d(y);
 
-        // Step 2: Define the model
-        const model = tf.sequential();
-
-        // Input layer and first hidden layer
-        model.add(tf.layers.dense({ units: 32, inputShape: [lookBack], activation: 'relu' }));
-
-        // Second hidden layer
-        model.add(tf.layers.dense({ units: 16, activation: 'relu' }));
-
-        // Output layer (single neuron for regression)
-        model.add(tf.layers.dense({ units: 1 }));
-
-        // Compile the model with Adam optimizer and MSE loss
-        model.compile({
-            optimizer: tf.train.adam(0.001),
-            loss: 'meanSquaredError',
+        const history = await model.fit(XTensor, yTensor, {
+            epochs,
+            batchSize,
+            validationSplit: 0.2,
+            callbacks: [tf.callbacks.earlyStopping({ patience: 3 })],
         });
 
-        // Step 3: Train the model
-        console.log("Training the model...");
-        await model.fit(XTensor, yTensor, {
-            epochs: 10,
-            batchSize: 16,
-            validationSplit: 0.1,
-            callbacks: [
-                tf.callbacks.earlyStopping({ patience: 3 }),  // Stop training if validation loss does not improve
-            ],
-        });
+        XTensor.dispose();
+        yTensor.dispose();
 
-        // Step 4: Forecast the next year
-        const steps = 365 * 96; // Forecast 15-minute intervals for 1 year
-        console.log("Forecasting...");
-        const predictions = this.forecastNextYear(model, normalizedData, lookBack, steps);
-
-        // Step 5: Denormalize and save the predictions
-        const denormalizedPredictions = denormalize(predictions, min, max);
-
-        const realData = await this.loadFileForYear(COMPARISON_YEAR);
-
-        const startDate = dayjs().startOf('year');
-
-        const result = denormalizedPredictions.map((predictedValue, index) => {
-            const actualValue = _.get(realData, index, 0);
-
-            return {
-                timestamp: startDate.add(index * 15, 'minute').format('YYYY-MM-DD HH:mm:ss'),
-                predictedValue,
-                realValue: actualValue.value,
-                deviation: Math.abs(predictedValue - actualValue.value),
-                errorPercentage: (Math.abs(predictedValue - actualValue.value) / actualValue.value) * 100
-            }
-        })
-
-        const fileName = `data/output/predictions-${new Date().valueOf()}.json`;
-
-        fs.writeFileSync(fileName, JSON.stringify(result, null, 2), "utf-8");
-
-        const totalDeviationAvg = result
-            .filter((entry) => Number.isFinite(entry.deviation))
-            .reduce((acc, entry) => acc + entry.deviation, 0) / result.length;
-
-        console.log(`Predictions saved to ${fileName}. Average deviation: ${totalDeviationAvg}`);
-
-        return result;
-    };
-
-    private async loadData(): Promise<number[]> {
-        const promises = INPUT_YEARS.map(this.loadFileForYear);
-        const data = await Promise.all(promises);
-
-        const [firstYear, secondYear] = data;
-
-        const averages = []
-
-        for (let i = 0; i < firstYear.length; i++) {
-            const firstYearEntry = firstYear[i];
-
-            const firstYearTimestamp = firstYearEntry.timestamp;
-            const secondYearTimestamp = dayjs(firstYearTimestamp).add(1, 'year').format('YYYY-MM-DD HH:mm')
-
-            const secondYearEntry = secondYear.find((entry) => entry.timestamp === secondYearTimestamp);
-
-            let value = firstYearEntry.value;
-
-            if (secondYearEntry) {
-                value = (value + secondYearEntry.value) / 2;
-            }
-
-            averages.push(value);
-        }
-
-        return averages;
+        return history;
     }
 
-    private async loadFileForYear(year: number): Promise<ConsumptionData[]> {
-        const fileName = `data/input/energy-data-${year}.json`;
-        return await loadData(fileName);
-    }
-
-    private forecastNextYear(
+    // Forecast daily energy data
+    private forecastDaily(
         model: tf.Sequential,
-        initialData: number[],
-        lookBack: number,
+        lastValues: number[],
         steps: number
     ): number[] {
-        let currentInput = initialData.slice(-lookBack); // Get the last 'lookBack' values
         const predictions: number[] = [];
+        let currentInput = lastValues.slice();
 
         for (let i = 0; i < steps; i++) {
-            // Convert the current input to a 3D tensor of shape [1, lookBack]
-            const inputTensor = tf.tensor2d(currentInput, [1, lookBack]);  // Reshape the input to 2D
-
-            // Get the prediction for the next time step
+            const inputTensor = tf.tensor2d([currentInput]);
             const prediction = model.predict(inputTensor) as tf.Tensor;
             const predictedValue = prediction.dataSync()[0];
-
-            // Store the prediction and update the input with the predicted value
             predictions.push(predictedValue);
 
-            // Update input by sliding the window
-            currentInput = currentInput.slice(1).concat(predictedValue);
+            currentInput.shift();
+            currentInput.push(predictedValue);
+
+            inputTensor.dispose();
+            prediction.dispose();
         }
 
         return predictions;
-    };
+    }
 
+    // Denormalize data
+    private denormalizeData(
+        normalizedData: number[],
+        min: number,
+        max: number
+    ): number[] {
+        return normalizedData.map(value => value * (max - min) + min);
+    }
+
+    // Calculate deviation percentage
+    private calculateDeviationPercentage(
+        data2022: ConsumptionData[], data2023: ConsumptionData[], values2024: number[]): { date: string; predictedValue: number; actualValue: number; deviation: string }[] {
+            return data2022.map((item, index) => {
+                const predictedValue = (item.value + data2023[index].value) / 2;
+    
+                return {
+                    date: item.timestamp,
+                    predictedValue,
+                    actualValue: values2024[index],
+                    deviation: ((Math.abs(predictedValue - values2024[index]) / values2024[index]) * 100).toFixed(2)
+                };
+            })
+    }
+
+    // Main execution
+    async forecast() {
+        const filePath2022 = 'data/input/energy-data-2022.json';
+        const filePath2023 = 'data/input/energy-data-2023.json';
+        const filePath2024 = 'data/input/energy-data-2024.json';
+
+        // Load data
+        const data2022 = await loadData(filePath2022);
+        const data2023 = await loadData(filePath2023);
+        const data2024 = await loadData(filePath2024);
+
+        const values2024 = data2024.map(d => d.value); // Real values from 2024
+
+        const combinedData = [...data2022, ...data2023]; // Combine 2022 and 2023 for training
+
+        const lookBack = 30; // Days to look back
+
+        // Normalize data
+        const { normalized,  } = this.normalizeData(combinedData);
+
+        // Prepare training data
+        const { X, y } = this.prepareData(normalized, lookBack);
+
+        // Create and train the model
+        const model = this.createModel(lookBack);
+        console.log('Training the model...');
+        await this.trainModel(model, X, y, 50, 16);
+
+        // Calculate deviation percentage
+        const deviations = this.calculateDeviationPercentage(data2022, data2023, values2024);
+
+        // Save results
+        fs.writeFileSync('data/output/forecast.json', JSON.stringify(deviations, null, 2));
+
+        console.log('Forecast saved');
+    }
 }
