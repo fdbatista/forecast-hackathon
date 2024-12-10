@@ -8,7 +8,7 @@ export class ForecastController {
 
     @Get()
     async forecast() {
-        await this.forecastService.forecast();
+        return await this.forecastService.forecast();
     }
 
 }

@@ -73,22 +73,24 @@ export class ForecastService {
 
         const startDate = dayjs().startOf('year');
 
-        const result = denormalizedPredictions.map((value, index) => {
+        const result = denormalizedPredictions.map((predictedValue, index) => {
             const realValue = _.get(realData, index, 0);
 
             return {
                 timestamp: startDate.add(index * 15, 'minute').format('YYYY-MM-DD HH:mm:ss'),
-                predictedValue: value,
+                predictedValue,
                 realValue,
-                deviation: Math.abs(value - realValue),
-                errorPercentage: (Math.abs(value - realValue) / realValue) * 100
+                deviation: Math.abs(predictedValue - realValue.value),
+                errorPercentage: (Math.abs(predictedValue - realValue.value) / realValue.value) * 100
             }
         })
 
         const fileName = `data/output/predictions-${new Date().valueOf()}.json`;
 
         fs.writeFileSync(fileName, JSON.stringify(result, null, 2), "utf-8");
-        console.log(`Predictions saved to ${fileName}`);
+
+        const totalDeviationAvg = result.reduce((acc, entry) => acc + entry.deviation, 0) / result.length;
+        console.log(`Predictions saved to ${fileName}. Average deviation: ${totalDeviationAvg}`);
 
         return result;
     };
