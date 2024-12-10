@@ -41,6 +41,9 @@ importers:
       fs:
         specifier: 0.0.1-security
         version: 0.0.1-security
+      lodash:
+        specifier: ^4.17.21
+        version: 4.17.21
       openai:
         specifier: ^4.76.0
         version: 4.76.0
