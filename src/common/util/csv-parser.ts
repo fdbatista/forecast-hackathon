@@ -1,9 +1,12 @@
 import * as fs from "fs";
-import csvParser from "csv-parser";
+import * as csvParser from "csv-parser";
 import { EnergyData } from "../energy-data.interface";
 
-export const loadData = async (filePath: string): Promise<number[]> => {
+const filePath = 'energy-data.csv';
+
+export const loadData = async (): Promise<number[]> => {
     const data: number[] = [];
+
     return new Promise((resolve, reject) => {
         fs.createReadStream(filePath)
             .pipe(csvParser())
