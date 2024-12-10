@@ -6,6 +6,7 @@ import * as tf from "@tensorflow/tfjs";
 import * as fs from "fs";
 import * as _ from "lodash";
 import * as dayjs from 'dayjs';
+import { ConsumptionData } from 'src/common/energy-data.interface';
 
 const INPUT_YEARS = [2022, 2023];
 const COMPARISON_YEAR = 2024;
@@ -88,29 +89,39 @@ export class ForecastService {
 
         fs.writeFileSync(fileName, JSON.stringify(result, null, 2), "utf-8");
         console.log(`Predictions saved to ${fileName}`);
+
+        return result;
     };
 
     private async loadData(): Promise<number[]> {
         const promises = INPUT_YEARS.map(this.loadFileForYear);
         const data = await Promise.all(promises);
+        
+        const [firstYear, secondYear] = data;
 
-        const [firstYearData, ...remainingYearsData] = data;
+        const averages = []
 
-        const result = []
+        for (let i = 0; i < firstYear.length; i++) {
+            const firstYearEntry = firstYear[i];
+            
+            const firstYearTimestamp = firstYearEntry.timestamp;
+            const secondYearTimestamp = dayjs(firstYearTimestamp).add(1, 'year').format('YYYY-MM-DD HH:mm')
 
-        for (let i = 0; i < firstYearData.length; i++) {
-            const firstYearEntry = firstYearData[i];
-            const remainingEntries = remainingYearsData.map((yearData) => _.get(yearData, i, null)).filter((entry) => entry !== null);
+            const secondYearEntry = secondYear.find((entry) => entry.timestamp === secondYearTimestamp);
 
-            const avg = (firstYearEntry + remainingEntries.reduce((acc, entry) => acc + entry, 0)) / (remainingEntries.length + 1);
+            let value = firstYearEntry.value;
 
-            result.push(avg);
+            if (secondYearEntry) {
+                value = (value + secondYearEntry.value) / 2;
+            }
+
+            averages.push(value);
         }
 
-        return result;
+        return averages;
     }
 
-    private async loadFileForYear(year: number): Promise<number[]> {
+    private async loadFileForYear(year: number): Promise<ConsumptionData[]> {
         const fileName = `data/input/energy-data-${year}.json`;
         return await loadData(fileName);
     }
