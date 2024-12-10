@@ -9,116 +9,90 @@ import * as _ from "lodash";
 @Injectable()
 export class ForecastService {
     // Normalize data
-    private normalizeData(
-        data: ConsumptionData[]
-    ): { normalized: number[]; min: number; max: number } {
-        const values = data.map(d => d.value);
-        const min = Math.min(...values);
-        const max = Math.max(...values);
-
-        const normalized = values.map(value => (value - min) / (max - min));
-        return { normalized, min, max };
+    normalize(data: number[]): number[] {
+        const min = Math.min(...data);
+        const max = Math.max(...data);
+        return data.map((value) => (value - min) / (max - min));
     }
 
-    // Prepare training data (X, y)
-    private prepareData(
-        normalizedData: number[],
-        lookBack: number
-    ): { X: number[][]; y: number[] } {
-        const X = [];
-        const y = [];
+    // Denormalize the data back to original scale
+    denormalize(normalizedData: number[], originalData: number[]): number[] {
+        const min = Math.min(...originalData);
+        const max = Math.max(...originalData);
+        return normalizedData.map((value) => value * (max - min) + min);
+    }
 
-        for (let i = 0; i < normalizedData.length - lookBack; i++) {
-            X.push(normalizedData.slice(i, i + lookBack));
-            y.push(normalizedData[i + lookBack]);
+    // Prepare the data for LSTM (reshape to [samples, timeSteps, features])
+    prepareData(data: number[], lookBack: number): [tf.Tensor, tf.Tensor] {
+        const X: number[][][] = [];
+        const y: number[] = [];
+
+        for (let i = lookBack; i < data.length; i++) {
+            const inputSequence = data.slice(i - lookBack, i);
+            X.push(inputSequence.map(value => [value])); // Reshaping data for LSTM
+            y.push(data[i]);
         }
 
-        return { X, y };
+        return [tf.tensor3d(X, [X.length, lookBack, 1]), tf.tensor1d(y)];
     }
 
-    // Build the model
-    private createModel(lookBack: number): tf.Sequential {
+    createLSTMModel(lookBack: number): tf.Sequential {
         const model = tf.sequential();
-
-        model.add(tf.layers.dense({ units: 64, activation: 'relu', inputShape: [lookBack] }));
-        model.add(tf.layers.dense({ units: 32, activation: 'relu' }));
-        model.add(tf.layers.dense({ units: 1 })); // Output layer
-        model.compile({ optimizer: 'adam', loss: 'meanSquaredError' });
-
-        return model;
-    }
-
-    // Train the model
-    private async trainModel(
-        model: tf.Sequential,
-        X: number[][],
-        y: number[],
-        epochs: number,
-        batchSize: number
-    ): Promise<tf.History> {
-        const XTensor = tf.tensor2d(X);
-        const yTensor = tf.tensor1d(y);
-
-        const history = await model.fit(XTensor, yTensor, {
-            epochs,
-            batchSize,
-            validationSplit: 0.2,
-            callbacks: [tf.callbacks.earlyStopping({ patience: 3 })],
+        model.add(tf.layers.lstm({
+            units: 50,
+            activation: 'relu',
+            inputShape: [lookBack, 1],
+            returnSequences: false,
+        }));
+        model.add(tf.layers.dense({ units: 1 }));
+        model.compile({
+            optimizer: 'adam',
+            loss: 'meanSquaredError',
         });
+        return model;
+    };
 
-        XTensor.dispose();
-        yTensor.dispose();
+    async trainLSTMModel(model: tf.Sequential, X: tf.Tensor, y: tf.Tensor): Promise<void> {
+        await model.fit(X, y, {
+            epochs: 50,
+            batchSize: 32,
+            validationSplit: 0.2,
+            callbacks: [
+                tf.callbacks.earlyStopping({ patience: 5 }),
+            ],
+        });
+    };
 
-        return history;
-    }
-
-    // Forecast daily energy data
-    private forecastDaily(
-        model: tf.Sequential,
-        lastValues: number[],
-        steps: number
-    ): number[] {
+    forecastWithLSTM(model: tf.Sequential, inputData: number[], lookBack: number, steps: number): number[] {
+        let currentInput = inputData.slice(-lookBack);
         const predictions: number[] = [];
-        let currentInput = lastValues.slice();
 
         for (let i = 0; i < steps; i++) {
-            const inputTensor = tf.tensor2d([currentInput]);
-            const prediction = model.predict(inputTensor) as tf.Tensor;
-            const predictedValue = prediction.dataSync()[0];
-            predictions.push(predictedValue);
+            const inputTensor = tf.tensor3d([currentInput.map(value => [value])], [1, lookBack, 1]);
+            const predictedValue = model.predict(inputTensor) as tf.Tensor;
+            const predictedValueNum = predictedValue.dataSync()[0];
 
-            currentInput.shift();
-            currentInput.push(predictedValue);
-
-            inputTensor.dispose();
-            prediction.dispose();
+            predictions.push(predictedValueNum);
+            currentInput.push(predictedValueNum);
+            currentInput = currentInput.slice(1);
         }
 
         return predictions;
-    }
-
-    // Denormalize data
-    private denormalizeData(
-        normalizedData: number[],
-        min: number,
-        max: number
-    ): number[] {
-        return normalizedData.map(value => value * (max - min) + min);
-    }
+    };
 
     // Calculate deviation percentage
     private calculateDeviationPercentage(
         data2022: ConsumptionData[], data2023: ConsumptionData[], values2024: number[]): { date: string; predictedValue: number; actualValue: number; deviation: string }[] {
-            return data2022.map((item, index) => {
-                const predictedValue = (item.value + data2023[index].value) / 2;
-    
-                return {
-                    date: item.timestamp,
-                    predictedValue,
-                    actualValue: values2024[index],
-                    deviation: ((Math.abs(predictedValue - values2024[index]) / values2024[index]) * 100).toFixed(2)
-                };
-            })
+        return data2022.map((item, index) => {
+            const predictedValue = (item.value + data2023[index].value) / 2;
+
+            return {
+                date: item.timestamp,
+                predictedValue,
+                actualValue: values2024[index],
+                deviation: ((Math.abs(predictedValue - values2024[index]) / values2024[index]) * 100).toFixed(2)
+            };
+        })
     }
 
     // Main execution
@@ -132,29 +106,50 @@ export class ForecastService {
         const data2023 = await loadData(filePath2023);
         const data2024 = await loadData(filePath2024);
 
-        const values2024 = data2024.map(d => d.value); // Real values from 2024
+        // Combine data from 2022 and 2023 for training
+        const combinedData = [
+            ...data2022.map(d => d.value),
+            ...data2023.map(d => d.value),
+        ];
 
-        const combinedData = [...data2022, ...data2023]; // Combine 2022 and 2023 for training
+        // Normalize the combined data
+        const normalizedData = this.normalize(combinedData);
 
-        const lookBack = 30; // Days to look back
+        // Prepare data for training (using a lookBack of 30 days)
+        const lookBack = 10;
+        const [X, y] = this.prepareData(normalizedData, lookBack);
 
-        // Normalize data
-        const { normalized,  } = this.normalizeData(combinedData);
+        // Create and train the LSTM model
+        const model = this.createLSTMModel(lookBack);
+        await this.trainLSTMModel(model, X, y);
 
-        // Prepare training data
-        const { X, y } = this.prepareData(normalized, lookBack);
+        // Forecast the next year (2024)
+        const inputData = normalizedData.slice(-lookBack);
+        const predictedNormalizedValues = this.forecastWithLSTM(model, inputData, lookBack, data2024.length);
 
-        // Create and train the model
-        const model = this.createModel(lookBack);
-        console.log('Training the model...');
-        await this.trainModel(model, X, y, 50, 16);
+        // Denormalize the predicted values
+        const predictedValues = this.denormalize(predictedNormalizedValues, combinedData);
 
-        // Calculate deviation percentage
-        const deviations = this.calculateDeviationPercentage(data2022, data2023, values2024);
+        console.log(predictedNormalizedValues)
 
-        // Save results
+        // Compare predictions with actual values for 2024 and calculate deviation
+        const actualValues = data2024.map(d => d.value);
+        const deviations = predictedValues.map((predicted, index) => {
+            const actual = actualValues[index];
+            const deviation = Math.abs((predicted - actual) / actual) * 100;
+            return {
+                date: data2024[index].timestamp,
+                predictedValue: predicted,
+                actualValue: actual,
+                deviation: deviation.toFixed(2),
+            };
+        });
+
+        // Output the results
         fs.writeFileSync('data/output/forecast.json', JSON.stringify(deviations, null, 2));
 
         console.log('Forecast saved');
+
+        return deviations;
     }
 }
